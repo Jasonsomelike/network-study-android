@@ -1,0 +1,13 @@
+﻿QQ互联 Android 应用填写信息
+
+安装包名称：cn.bestijason.networkstudy
+安装包签名（MD5）：dc7050f2c46bab855c61bc98b43405fe
+证书 SHA-1：71c1bf6573597b81593eb88315d12c7be0eee6da
+证书 SHA-256：48f77dee457a563b589b5cf9a875e75cca85b0e55f4ec3315093e0580286e492
+证书别名：networkstudy
+证书有效期：Valid from: Mon Jun 22 20:57:09 CST 2026 until: Wed May 29 20:57:09 CST 2126
+
+正式 APK：E:\vibecoding\network-study-android\知行网络学堂-release.apk
+网站图标：E:\vibecoding\network-study-android\exports\qq-connect-website-icon-100x100.png
+
+重要：QQ互联中的安装包签名填写上面的 MD5，小写且不带冒号。

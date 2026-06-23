@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="native_shell_surface">#FAF9F5</color>
+    <color name="native_shell_ink">#18231F</color>
+    <color name="native_shell_muted">#668074</color>
+    <color name="native_shell_accent">#DFF67A</color>
+    <color name="native_shell_deep">#12221E</color>
+</resources>

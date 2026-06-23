@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2732" height="2732" viewBox="0 0 2732 2732">
+  <rect width="2732" height="2732" fill="#12221e"/>
+  <g transform="translate(854 710)">
+    <path d="M0 390 512 116l512 274-512 274L0 390Z" fill="#dff67a"/>
+    <path d="M176 516v250c0 100 150 197 336 197s336-97 336-197V516L512 696 176 516Z" fill="#f8fff0"/>
+    <path d="M1024 393v338" stroke="#dff67a" stroke-width="58" stroke-linecap="round"/>
+    <circle cx="1024" cy="810" r="70" fill="#ffb86b"/>
+  </g>
+  <text x="1366" y="1870" fill="#ffffff" font-family="sans-serif" font-size="126" font-weight="700" text-anchor="middle">知行网络学堂</text>
+  <text x="1366" y="2010" fill="#a9b8b1" font-family="sans-serif" font-size="52" letter-spacing="18" text-anchor="middle">NETWORK STUDIO</text>
+</svg>
