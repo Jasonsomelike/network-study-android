@@ -30,6 +30,7 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.getcapacitor.BridgeActivity;
+import com.tencent.connect.common.Constants;
 import com.tencent.tauth.IUiListener;
 import com.tencent.tauth.Tencent;
 import com.tencent.tauth.UiError;
@@ -89,6 +90,7 @@ public class MainActivity extends BridgeActivity {
                     throw new IllegalStateException("QQ credentials missing");
                 }
                 if (qqTencent != null) {
+                    qqTencent.saveSession(response);
                     qqTencent.setAccessToken(accessToken, expiresIn);
                     qqTencent.setOpenId(openId);
                 }
@@ -140,7 +142,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.6"
+                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.7"
                 );
             }
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
@@ -388,16 +390,33 @@ public class MainActivity extends BridgeActivity {
             dispatchQqError("QQ SDK 初始化失败");
             return;
         }
-        if ("bind".equals(qqLoginPurpose) && qqTencent.isSessionValid()) {
-            qqTencent.logout(this);
-        } else if (qqTencent.isSessionValid() && recoverQqSession("existing-session")) {
+        if (!qqTencent.isQQInstalled(this)) {
+            dispatchQqError("未检测到 QQ 客户端，请安装或更新 QQ 后重试");
             return;
+        }
+        if (qqTencent.isSessionValid()) {
+            qqTencent.logout(this);
         }
         Toast.makeText(this, "正在打开 QQ 授权…", Toast.LENGTH_SHORT).show();
         updateQqStatus("launching-qq");
         int result = qqTencent.login(this, "get_user_info", qqLoginListener);
         if (result < 0) {
             dispatchQqError("QQ 登录启动失败，错误码：" + result);
+            return;
+        }
+        if (webView != null) {
+            webView.postDelayed(() -> {
+                recoverQqSession("launch-2000");
+                dispatchPendingQqResult();
+            }, 2000);
+            webView.postDelayed(() -> {
+                recoverQqSession("launch-5000");
+                dispatchPendingQqResult();
+            }, 5000);
+            webView.postDelayed(() -> {
+                recoverQqSession("launch-10000");
+                dispatchPendingQqResult();
+            }, 10000);
         }
     }
 
@@ -434,6 +453,10 @@ public class MainActivity extends BridgeActivity {
 
     private boolean recoverQqSession(String stage) {
         initializeQqSdk();
+        if (preferences != null) {
+            qqLoginPurpose = preferences.getString(QQ_LOGIN_PURPOSE, qqLoginPurpose);
+            qqLoginInFlight = preferences.getBoolean(QQ_LOGIN_IN_FLIGHT, qqLoginInFlight);
+        }
         if (!qqLoginInFlight || qqTencent == null || !qqTencent.isSessionValid()) {
             updateQqStatus(stage + "-waiting");
             return false;
@@ -463,10 +486,17 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         updateQqStatus("activity-result-" + requestCode + "-" + resultCode);
-        Tencent.onActivityResultData(requestCode, resultCode, data, qqLoginListener);
+        boolean handled = Tencent.onActivityResultData(requestCode, resultCode, data, qqLoginListener);
+        if (!handled && data != null && requestCode == Constants.REQUEST_LOGIN && qqTencent != null) {
+            qqTencent.handleLoginData(data, qqLoginListener);
+        }
+        if (data != null) {
+            Tencent.handleResultData(data, qqLoginListener);
+        }
         super.onActivityResult(requestCode, resultCode, data);
         if (webView != null) {
             webView.postDelayed(() -> recoverQqSession("activity-result"), 350);
+            webView.postDelayed(() -> dispatchPendingQqResult(), 900);
         }
     }
 
@@ -477,8 +507,12 @@ public class MainActivity extends BridgeActivity {
         if (intent != null) {
             updateQqStatus("new-intent");
             Tencent.handleResultData(intent, qqLoginListener);
+            if (qqTencent != null) {
+                qqTencent.handleLoginData(intent, qqLoginListener);
+            }
             if (webView != null) {
                 webView.postDelayed(() -> recoverQqSession("new-intent"), 350);
+                webView.postDelayed(() -> dispatchPendingQqResult(), 900);
             }
         }
     }
@@ -509,7 +543,7 @@ public class MainActivity extends BridgeActivity {
         String mimeType
     ) {
         try {
-            String filename = URLUtil.guessFileName(url, contentDisposition, mimeType);
+            String filename = resolveDownloadFilename(url, contentDisposition, mimeType);
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
             String cookies = cookieManager.getCookie(url);
             if (cookies != null && !cookies.isEmpty()) {
@@ -527,6 +561,73 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception error) {
             Toast.makeText(this, "下载启动失败，请稍后重试", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private String normalizeMimeType(String mimeType) {
+        String value = mimeType == null || mimeType.isEmpty() ? "application/octet-stream" : mimeType;
+        int mimeSeparator = value.indexOf(';');
+        if (mimeSeparator > 0) {
+            value = value.substring(0, mimeSeparator);
+        }
+        return value.trim().isEmpty() ? "application/octet-stream" : value.trim();
+    }
+
+    private String sanitizeFilename(String value) {
+        if (value == null) {
+            return "";
+        }
+        String decoded = value;
+        try {
+            decoded = URLDecoder.decode(value, StandardCharsets.UTF_8.name());
+        } catch (Exception ignored) {
+        }
+        decoded = decoded.replaceAll("[\\\\/:*?\"<>|\\r\\n]+", "_").trim();
+        return decoded.length() > 180 ? decoded.substring(0, 180) : decoded;
+    }
+
+    private String filenameFromContentDisposition(String contentDisposition) {
+        if (contentDisposition == null || contentDisposition.isEmpty()) {
+            return "";
+        }
+        String lower = contentDisposition.toLowerCase();
+        int starIndex = lower.indexOf("filename*=");
+        if (starIndex >= 0) {
+            String value = contentDisposition.substring(starIndex + "filename*=".length()).split(";", 2)[0].trim();
+            int quote = value.indexOf("''");
+            if (quote >= 0) {
+                value = value.substring(quote + 2);
+            }
+            value = value.replace("\"", "");
+            return sanitizeFilename(value);
+        }
+        int index = lower.indexOf("filename=");
+        if (index >= 0) {
+            String value = contentDisposition.substring(index + "filename=".length()).split(";", 2)[0].trim();
+            if (value.startsWith("\"") && value.endsWith("\"") && value.length() > 1) {
+                value = value.substring(1, value.length() - 1);
+            }
+            return sanitizeFilename(value);
+        }
+        return "";
+    }
+
+    private String resolveDownloadFilename(String url, String contentDisposition, String mimeType) {
+        try {
+            Uri uri = Uri.parse(url);
+            String queryFilename = sanitizeFilename(uri.getQueryParameter("filename"));
+            if (!queryFilename.isEmpty()) {
+                return queryFilename;
+            }
+        } catch (Exception ignored) {
+        }
+        String dispositionFilename = filenameFromContentDisposition(contentDisposition);
+        if (!dispositionFilename.isEmpty()) {
+            return dispositionFilename;
+        }
+        String guessed = sanitizeFilename(URLUtil.guessFileName(url, contentDisposition, mimeType));
+        return guessed.isEmpty() || guessed.matches("(?i)^file(?:\\.[a-z0-9]+)?$")
+            ? "知行网络学堂文件"
+            : guessed;
     }
 
     private void downloadToSelectedDirectory(
@@ -556,19 +657,12 @@ public class MainActivity extends BridgeActivity {
 
                 String responseDisposition = connection.getHeaderField("Content-Disposition");
                 String responseType = connection.getContentType();
-                String filename = URLUtil.guessFileName(
+                String filename = resolveDownloadFilename(
                     connection.getURL().toString(),
                     responseDisposition != null ? responseDisposition : contentDisposition,
                     responseType != null ? responseType : mimeType
                 );
-                String finalMimeType = responseType != null ? responseType : mimeType;
-                if (finalMimeType == null || finalMimeType.isEmpty()) {
-                    finalMimeType = "application/octet-stream";
-                }
-                int mimeSeparator = finalMimeType.indexOf(';');
-                if (mimeSeparator > 0) {
-                    finalMimeType = finalMimeType.substring(0, mimeSeparator);
-                }
+                String finalMimeType = normalizeMimeType(responseType != null ? responseType : mimeType);
 
                 Uri treeUri = Uri.parse(treeUriValue);
                 String treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri);
@@ -635,9 +729,14 @@ public class MainActivity extends BridgeActivity {
         ));
     }
 
-    private void saveImageBytes(byte[] bytes, String filename) {
+    private void saveFileBytes(byte[] bytes, String filename, String mimeType, String successPrefix, String errorMessage) {
         new Thread(() -> {
             try {
+                String finalMimeType = normalizeMimeType(mimeType);
+                String safeFilename = sanitizeFilename(filename);
+                if (safeFilename.isEmpty()) {
+                    safeFilename = "知行网络学堂文件";
+                }
                 String treeUriValue = preferences.getString(DOWNLOAD_TREE_URI, "");
                 if (!treeUriValue.isEmpty()) {
                     Uri treeUri = Uri.parse(treeUriValue);
@@ -646,22 +745,22 @@ public class MainActivity extends BridgeActivity {
                     Uri destination = DocumentsContract.createDocument(
                         getContentResolver(),
                         parentUri,
-                        "image/png",
-                        filename
+                        finalMimeType,
+                        safeFilename
                     );
                     if (destination == null) {
-                        throw new IllegalStateException("Unable to create image");
+                        throw new IllegalStateException("Unable to create file");
                     }
                     try (OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
                         if (output == null) {
-                            throw new IllegalStateException("Unable to open image destination");
+                            throw new IllegalStateException("Unable to open file destination");
                         }
                         output.write(bytes);
                     }
                 } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues values = new ContentValues();
-                    values.put(MediaStore.Downloads.DISPLAY_NAME, filename);
-                    values.put(MediaStore.Downloads.MIME_TYPE, "image/png");
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, safeFilename);
+                    values.put(MediaStore.Downloads.MIME_TYPE, finalMimeType);
                     values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
                     Uri destination = getContentResolver().insert(
                         MediaStore.Downloads.EXTERNAL_CONTENT_URI,
@@ -681,25 +780,30 @@ public class MainActivity extends BridgeActivity {
                     if (!directory.exists() && !directory.mkdirs()) {
                         throw new IllegalStateException("Unable to create downloads directory");
                     }
-                    try (OutputStream output = new FileOutputStream(new File(directory, filename))) {
+                    try (OutputStream output = new FileOutputStream(new File(directory, safeFilename))) {
                         output.write(bytes);
                     }
                 }
+                String savedName = safeFilename;
                 runOnUiThread(() ->
-                    Toast.makeText(this, "分享图已保存：" + filename, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, successPrefix + "已保存：" + savedName, Toast.LENGTH_LONG).show()
                 );
             } catch (Exception error) {
                 runOnUiThread(() ->
-                    Toast.makeText(this, "分享图保存失败，请检查下载位置", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
                 );
             }
         }).start();
     }
 
+    private void saveImageBytes(byte[] bytes, String filename) {
+        saveFileBytes(bytes, filename, "image/png", "分享图", "分享图保存失败，请检查下载位置");
+    }
+
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.6";
+            return "1.7";
         }
 
         @JavascriptInterface
@@ -763,6 +867,26 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public void saveBase64File(String dataUrl, String filename, String mimeType) {
+            try {
+                int comma = dataUrl.indexOf(',');
+                String encoded = comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl;
+                byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
+                saveFileBytes(
+                    bytes,
+                    filename,
+                    mimeType == null || mimeType.isEmpty() ? "application/octet-stream" : mimeType,
+                    "文件",
+                    "文件保存失败，请检查下载位置"
+                );
+            } catch (Exception error) {
+                runOnUiThread(() ->
+                    Toast.makeText(MainActivity.this, "文件数据无效", Toast.LENGTH_SHORT).show()
+                );
+            }
+        }
+
+        @JavascriptInterface
         public void loginWithQQ() {
             runOnUiThread(() -> startQqLogin("login"));
         }
@@ -782,6 +906,10 @@ public class MainActivity extends BridgeActivity {
             if (preferences == null) {
                 return "bridge-not-ready";
             }
+            runOnUiThread(() -> {
+                recoverQqSession("status-query");
+                dispatchPendingQqResult();
+            });
             return preferences.getString(QQ_LOGIN_STATUS, "idle");
         }
 
