@@ -73,6 +73,7 @@ public class MainActivity extends BridgeActivity {
     private String qqLoginPurpose = "login";
     private String pendingQqResult = "";
     private boolean qqLoginInFlight;
+    private boolean qqCheckInFlight;
     private final NetworkStudyBridge networkStudyBridge = new NetworkStudyBridge();
 
     private final IUiListener qqLoginListener = new IUiListener() {
@@ -142,7 +143,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.7"
+                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.8"
                 );
             }
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
@@ -325,6 +326,9 @@ public class MainActivity extends BridgeActivity {
     }
 
     private synchronized String consumePendingQqResultValue() {
+        if ((pendingQqResult == null || pendingQqResult.isEmpty()) && qqLoginInFlight) {
+            recoverQqSession("consume", false);
+        }
         String result = pendingQqResult;
         pendingQqResult = "";
         if (preferences != null) {
@@ -406,16 +410,19 @@ public class MainActivity extends BridgeActivity {
         }
         if (webView != null) {
             webView.postDelayed(() -> {
-                recoverQqSession("launch-2000");
-                dispatchPendingQqResult();
+                if (!recoverQqSession("launch-2000")) {
+                    requestQqCheckLogin("launch-2000");
+                }
             }, 2000);
             webView.postDelayed(() -> {
-                recoverQqSession("launch-5000");
-                dispatchPendingQqResult();
+                if (!recoverQqSession("launch-5000")) {
+                    requestQqCheckLogin("launch-5000");
+                }
             }, 5000);
             webView.postDelayed(() -> {
-                recoverQqSession("launch-10000");
-                dispatchPendingQqResult();
+                if (!recoverQqSession("launch-10000")) {
+                    requestQqCheckLogin("launch-10000");
+                }
             }, 10000);
         }
     }
@@ -452,6 +459,10 @@ public class MainActivity extends BridgeActivity {
     }
 
     private boolean recoverQqSession(String stage) {
+        return recoverQqSession(stage, true);
+    }
+
+    private boolean recoverQqSession(String stage, boolean shouldDispatch) {
         initializeQqSdk();
         if (preferences != null) {
             qqLoginPurpose = preferences.getString(QQ_LOGIN_PURPOSE, qqLoginPurpose);
@@ -475,11 +486,66 @@ public class MainActivity extends BridgeActivity {
             detail.put("purpose", qqLoginPurpose);
             storePendingQqResult("success", detail);
             finishQqLogin(stage + "-recovered");
-            dispatchPendingQqResult();
+            if (shouldDispatch) {
+                dispatchPendingQqResult();
+            }
             return true;
         } catch (Exception error) {
             updateQqStatus(stage + "-recovery-failed");
             return false;
+        }
+    }
+
+    private void requestQqCheckLogin(String stage) {
+        initializeQqSdk();
+        if (!qqLoginInFlight || qqTencent == null || qqCheckInFlight) {
+            return;
+        }
+        qqCheckInFlight = true;
+        updateQqStatus(stage + "-check-login");
+        try {
+            qqTencent.checkLogin(new IUiListener() {
+                @Override
+                public void onComplete(Object value) {
+                    qqCheckInFlight = false;
+                    if (value instanceof JSONObject) {
+                        JSONObject response = (JSONObject) value;
+                        if (!response.optString("access_token").isEmpty()
+                            && !response.optString("openid").isEmpty()) {
+                            qqLoginListener.onComplete(value);
+                            return;
+                        }
+                    }
+                    if (!recoverQqSession(stage + "-check-complete")) {
+                        updateQqStatus(stage + "-check-complete-waiting");
+                    }
+                }
+
+                @Override
+                public void onError(UiError error) {
+                    qqCheckInFlight = false;
+                    String code = error != null ? String.valueOf(error.errorCode) : "unknown";
+                    updateQqStatus(stage + "-check-error-" + code);
+                    dispatchPendingQqResult();
+                }
+
+                @Override
+                public void onCancel() {
+                    qqCheckInFlight = false;
+                    updateQqStatus(stage + "-check-cancel");
+                    dispatchPendingQqResult();
+                }
+
+                @Override
+                public void onWarning(int code) {
+                    if (code != 0) {
+                        updateQqStatus(stage + "-check-warning-" + code);
+                    }
+                }
+            });
+        } catch (Exception error) {
+            qqCheckInFlight = false;
+            updateQqStatus(stage + "-check-failed");
         }
     }
 
@@ -495,7 +561,11 @@ public class MainActivity extends BridgeActivity {
         }
         super.onActivityResult(requestCode, resultCode, data);
         if (webView != null) {
-            webView.postDelayed(() -> recoverQqSession("activity-result"), 350);
+            webView.postDelayed(() -> {
+                if (!recoverQqSession("activity-result")) {
+                    requestQqCheckLogin("activity-result");
+                }
+            }, 350);
             webView.postDelayed(() -> dispatchPendingQqResult(), 900);
         }
     }
@@ -511,7 +581,11 @@ public class MainActivity extends BridgeActivity {
                 qqTencent.handleLoginData(intent, qqLoginListener);
             }
             if (webView != null) {
-                webView.postDelayed(() -> recoverQqSession("new-intent"), 350);
+                webView.postDelayed(() -> {
+                    if (!recoverQqSession("new-intent")) {
+                        requestQqCheckLogin("new-intent");
+                    }
+                }, 350);
                 webView.postDelayed(() -> dispatchPendingQqResult(), 900);
             }
         }
@@ -522,16 +596,19 @@ public class MainActivity extends BridgeActivity {
         super.onResume();
         if (webView != null) {
             webView.postDelayed(() -> {
-                recoverQqSession("resume-450");
-                dispatchPendingQqResult();
+                if (!recoverQqSession("resume-450")) {
+                    requestQqCheckLogin("resume-450");
+                }
             }, 450);
             webView.postDelayed(() -> {
-                recoverQqSession("resume-1400");
-                dispatchPendingQqResult();
+                if (!recoverQqSession("resume-1400")) {
+                    requestQqCheckLogin("resume-1400");
+                }
             }, 1400);
             webView.postDelayed(() -> {
-                recoverQqSession("resume-3000");
-                dispatchPendingQqResult();
+                if (!recoverQqSession("resume-3000")) {
+                    requestQqCheckLogin("resume-3000");
+                }
             }, 3000);
         }
     }
@@ -803,7 +880,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.7";
+            return "1.8";
         }
 
         @JavascriptInterface
@@ -906,10 +983,9 @@ public class MainActivity extends BridgeActivity {
             if (preferences == null) {
                 return "bridge-not-ready";
             }
-            runOnUiThread(() -> {
-                recoverQqSession("status-query");
-                dispatchPendingQqResult();
-            });
+            if (qqLoginInFlight && !recoverQqSession("status-query", false)) {
+                runOnUiThread(() -> requestQqCheckLogin("status-query"));
+            }
             return preferences.getString(QQ_LOGIN_STATUS, "idle");
         }
 
