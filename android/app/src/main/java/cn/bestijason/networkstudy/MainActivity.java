@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.ContentValues;
+import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -143,7 +144,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.8"
+                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.9"
                 );
             }
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
@@ -806,6 +807,59 @@ public class MainActivity extends BridgeActivity {
         ));
     }
 
+    private String currentWebViewUserAgent() {
+        try {
+            if (webView != null && webView.getSettings() != null) {
+                String value = webView.getSettings().getUserAgentString();
+                if (value != null && !value.isEmpty()) {
+                    return value;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "NetworkStudyAndroid/1.9";
+    }
+
+    private String contentDispositionForFilename(String filename) {
+        String safeFilename = sanitizeFilename(filename);
+        if (safeFilename.isEmpty()) {
+            return "";
+        }
+        return "attachment; filename=\"" + safeFilename.replace("\"", "") + "\"";
+    }
+
+    private void downloadUrlFromBridge(String url, String filename) {
+        if (url == null || url.trim().isEmpty()) {
+            Toast.makeText(this, "下载链接无效", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String finalUrl = url.trim();
+        String mimeType = finalUrl.toLowerCase().contains(".apk")
+            ? "application/vnd.android.package-archive"
+            : "application/octet-stream";
+        String disposition = contentDispositionForFilename(filename);
+        String treeUri = preferences.getString(DOWNLOAD_TREE_URI, "");
+        if (!treeUri.isEmpty() && (finalUrl.startsWith("http://") || finalUrl.startsWith("https://"))) {
+            downloadToSelectedDirectory(finalUrl, currentWebViewUserAgent(), disposition, mimeType, treeUri);
+        } else {
+            enqueueSystemDownload(finalUrl, currentWebViewUserAgent(), disposition, mimeType);
+        }
+    }
+
+    private void openExternalUrlFromBridge(String url) {
+        if (url == null || url.trim().isEmpty()) {
+            Toast.makeText(this, "链接无效", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception error) {
+            Toast.makeText(this, "无法打开外部链接", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void saveFileBytes(byte[] bytes, String filename, String mimeType, String successPrefix, String errorMessage) {
         new Thread(() -> {
             try {
@@ -880,7 +934,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.8";
+            return "1.9";
         }
 
         @JavascriptInterface
@@ -893,14 +947,29 @@ public class MainActivity extends BridgeActivity {
                     "directoryName",
                     preferences.getString(DOWNLOAD_TREE_NAME, "系统 Download 文件夹")
                 );
-                String versionName = getPackageManager()
-                    .getPackageInfo(getPackageName(), 0)
-                    .versionName;
+                PackageInfo packageInfo = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0);
+                String versionName = packageInfo.versionName;
                 value.put("appVersion", versionName != null ? versionName : "1.1");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    value.put("appVersionCode", packageInfo.getLongVersionCode());
+                } else {
+                    value.put("appVersionCode", packageInfo.versionCode);
+                }
                 return value.toString();
             } catch (Exception error) {
                 return "{}";
             }
+        }
+
+        @JavascriptInterface
+        public void openExternalUrl(String url) {
+            runOnUiThread(() -> openExternalUrlFromBridge(url));
+        }
+
+        @JavascriptInterface
+        public void downloadUrl(String url, String filename) {
+            runOnUiThread(() -> downloadUrlFromBridge(url, filename));
         }
 
         @JavascriptInterface
