@@ -31,6 +31,7 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.getcapacitor.BridgeActivity;
+import com.tencent.connect.UnionInfo;
 import com.tencent.connect.common.Constants;
 import com.tencent.tauth.IUiListener;
 import com.tencent.tauth.Tencent;
@@ -101,9 +102,7 @@ public class MainActivity extends BridgeActivity {
                 detail.put("openId", openId);
                 detail.put("expiresIn", expiresIn);
                 detail.put("purpose", qqLoginPurpose);
-                storePendingQqResult("success", detail);
-                finishQqLogin("callback-complete");
-                dispatchPendingQqResult();
+                completeQqSuccess(detail, "callback-complete", true, true);
             } catch (Exception error) {
                 dispatchQqError("QQ 登录结果无效，请重试");
             }
@@ -144,7 +143,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.9"
+                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.10"
                 );
             }
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
@@ -326,6 +325,79 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    private synchronized void completeQqSuccessNow(JSONObject detail, String status, boolean shouldDispatch) {
+        if (!qqLoginInFlight && pendingQqResult != null && !pendingQqResult.isEmpty()) {
+            return;
+        }
+        storePendingQqResult("success", detail);
+        finishQqLogin(status);
+        if (shouldDispatch) {
+            dispatchPendingQqResult();
+        }
+    }
+
+    private void completeQqSuccess(JSONObject detail, String status, boolean shouldDispatch, boolean waitForUnion) {
+        if (!waitForUnion || qqTencent == null) {
+            completeQqSuccessNow(detail, status, shouldDispatch);
+            return;
+        }
+        updateQqStatus(status + "-union");
+        final boolean[] completed = { false };
+        Runnable finishWithoutUnion = () -> {
+            synchronized (completed) {
+                if (completed[0]) {
+                    return;
+                }
+                completed[0] = true;
+            }
+            completeQqSuccessNow(detail, status, shouldDispatch);
+        };
+        try {
+            UnionInfo unionInfo = new UnionInfo(this, qqTencent.getQQToken());
+            unionInfo.getUnionId(new IUiListener() {
+                @Override
+                public void onComplete(Object value) {
+                    synchronized (completed) {
+                        if (completed[0]) {
+                            return;
+                        }
+                        completed[0] = true;
+                    }
+                    try {
+                        if (value instanceof JSONObject) {
+                            String unionId = ((JSONObject) value).optString("unionid");
+                            if (!unionId.isEmpty()) {
+                                detail.put("unionId", unionId);
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    completeQqSuccessNow(detail, status, shouldDispatch);
+                }
+
+                @Override
+                public void onError(UiError error) {
+                    finishWithoutUnion.run();
+                }
+
+                @Override
+                public void onCancel() {
+                    finishWithoutUnion.run();
+                }
+
+                @Override
+                public void onWarning(int code) {
+                    finishWithoutUnion.run();
+                }
+            });
+            if (webView != null) {
+                webView.postDelayed(finishWithoutUnion, 2500);
+            }
+        } catch (Exception ignored) {
+            finishWithoutUnion.run();
+        }
+    }
+
     private synchronized String consumePendingQqResultValue() {
         if ((pendingQqResult == null || pendingQqResult.isEmpty()) && qqLoginInFlight) {
             recoverQqSession("consume", false);
@@ -485,11 +557,7 @@ public class MainActivity extends BridgeActivity {
             detail.put("openId", openId);
             detail.put("expiresIn", String.valueOf(qqTencent.getExpiresIn()));
             detail.put("purpose", qqLoginPurpose);
-            storePendingQqResult("success", detail);
-            finishQqLogin(stage + "-recovered");
-            if (shouldDispatch) {
-                dispatchPendingQqResult();
-            }
+            completeQqSuccess(detail, stage + "-recovered", shouldDispatch, shouldDispatch);
             return true;
         } catch (Exception error) {
             updateQqStatus(stage + "-recovery-failed");
@@ -817,7 +885,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        return "NetworkStudyAndroid/1.9";
+        return "NetworkStudyAndroid/1.10";
     }
 
     private String contentDispositionForFilename(String filename) {
@@ -934,7 +1002,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.9";
+            return "1.10";
         }
 
         @JavascriptInterface
