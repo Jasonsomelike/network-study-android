@@ -57,6 +57,7 @@ public class MainActivity extends BridgeActivity {
     private static final String QQ_LOGIN_PURPOSE = "qq_login_purpose";
     private static final String QQ_LOGIN_IN_FLIGHT = "qq_login_in_flight";
     private static final String QQ_LOGIN_STATUS = "qq_login_status";
+    private static final long BACK_EXIT_CONFIRM_MS = 2000L;
 
     private WebView webView;
     private CookieManager cookieManager;
@@ -70,6 +71,7 @@ public class MainActivity extends BridgeActivity {
     private boolean nativeShellVisible;
     private boolean keyboardVisible;
     private boolean nativeConversationDetail;
+    private long lastBackPressedAt;
     private String nativeShellPath = "";
     private Tencent qqTencent;
     private String qqLoginPurpose = "login";
@@ -143,7 +145,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.10"
+                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.11.0"
                 );
             }
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
@@ -206,12 +208,7 @@ public class MainActivity extends BridgeActivity {
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                if (webView.canGoBack()) {
-                    webView.goBack();
-                } else {
-                    setEnabled(false);
-                    getOnBackPressedDispatcher().onBackPressed();
-                }
+                handleNativeBackPressed();
             }
         });
     }
@@ -295,6 +292,73 @@ public class MainActivity extends BridgeActivity {
             JSONObject detail = new JSONObject();
             detail.put("href", path);
             dispatchWebEvent("network-study-native-nav", detail);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private boolean isPrimaryShellRoute() {
+        return nativeShellVisible && (
+            nativeShellPath == null
+                || nativeShellPath.isEmpty()
+                || "/chat".equals(nativeShellPath)
+                || "/library".equals(nativeShellPath)
+                || "/sources".equals(nativeShellPath)
+                || "/knowledge-graph".equals(nativeShellPath)
+                || "/profile".equals(nativeShellPath)
+        );
+    }
+
+    private void dispatchNativeBackAction(String action) {
+        try {
+            JSONObject detail = new JSONObject();
+            detail.put("action", action);
+            detail.put("path", nativeShellPath);
+            detail.put("at", System.currentTimeMillis());
+            dispatchWebEvent("network-study-native-back", detail);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void confirmOrExitApp() {
+        long now = System.currentTimeMillis();
+        if (now - lastBackPressedAt <= BACK_EXIT_CONFIRM_MS) {
+            lastBackPressedAt = 0L;
+            moveTaskToBack(true);
+            return;
+        }
+        lastBackPressedAt = now;
+        Toast.makeText(this, "再按一次退出 App", Toast.LENGTH_SHORT).show();
+    }
+
+    private void handleNativeBackPressed() {
+        if (nativeConversationDetail) {
+            nativeConversationDetail = false;
+            applyNativeShellVisibility();
+            dispatchNativeBackAction("chat-list");
+            return;
+        }
+
+        if (isPrimaryShellRoute()) {
+            confirmOrExitApp();
+            return;
+        }
+
+        if (webView != null && webView.canGoBack()) {
+            webView.goBack();
+            return;
+        }
+
+        confirmOrExitApp();
+    }
+
+    private void dispatchAppLifecycleState(String state) {
+        try {
+            JSONObject detail = new JSONObject();
+            detail.put("state", state);
+            detail.put("path", nativeShellPath);
+            detail.put("conversationDetail", nativeConversationDetail);
+            detail.put("at", System.currentTimeMillis());
+            dispatchWebEvent("network-study-app-lifecycle", detail);
         } catch (Exception ignored) {
         }
     }
@@ -663,6 +727,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onResume() {
         super.onResume();
+        dispatchAppLifecycleState("resume");
         if (webView != null) {
             webView.postDelayed(() -> {
                 if (!recoverQqSession("resume-450")) {
@@ -680,6 +745,12 @@ public class MainActivity extends BridgeActivity {
                 }
             }, 3000);
         }
+    }
+
+    @Override
+    public void onPause() {
+        dispatchAppLifecycleState("pause");
+        super.onPause();
     }
 
     private void enqueueSystemDownload(
@@ -885,7 +956,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        return "NetworkStudyAndroid/1.10";
+        return "NetworkStudyAndroid/1.11.0";
     }
 
     private String contentDispositionForFilename(String filename) {
@@ -1002,7 +1073,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.10";
+            return "1.11.0";
         }
 
         @JavascriptInterface
