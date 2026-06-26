@@ -12,8 +12,10 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 import android.view.View;
 import android.webkit.CookieManager;
@@ -60,6 +62,7 @@ public class MainActivity extends BridgeActivity {
     private static final String QQ_LOGIN_PURPOSE = "qq_login_purpose";
     private static final String QQ_LOGIN_IN_FLIGHT = "qq_login_in_flight";
     private static final String QQ_LOGIN_STATUS = "qq_login_status";
+    private static final String BATTERY_OPTIMIZATION_REQUESTED = "battery_optimization_requested";
     private static final long BACK_EXIT_CONFIRM_MS = 2000L;
 
     private WebView webView;
@@ -157,7 +160,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.12.0"
+                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.13.0"
                 );
             }
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
@@ -570,11 +573,40 @@ public class MainActivity extends BridgeActivity {
             intent.setAction(ChatForegroundService.ACTION_START);
             try {
                 ContextCompat.startForegroundService(this, intent);
+                requestBatteryOptimizationExemptionIfNeeded();
             } catch (Exception error) {
                 Toast.makeText(this, "后台生成保活启动失败，将在返回前台后自动恢复", Toast.LENGTH_SHORT).show();
             }
         } else {
             stopService(intent);
+        }
+    }
+
+    private void requestBatteryOptimizationExemptionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || preferences == null) {
+            return;
+        }
+        if (preferences.getBoolean(BATTERY_OPTIMIZATION_REQUESTED, false)) {
+            return;
+        }
+        try {
+            PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (powerManager == null || powerManager.isIgnoringBatteryOptimizations(getPackageName())) {
+                return;
+            }
+            preferences.edit().putBoolean(BATTERY_OPTIMIZATION_REQUESTED, true).apply();
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+            Toast.makeText(this, "允许后台运行可提升对话生成稳定性", Toast.LENGTH_LONG).show();
+        } catch (Exception error) {
+            preferences.edit().putBoolean(BATTERY_OPTIMIZATION_REQUESTED, true).apply();
+            try {
+                Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                startActivity(fallback);
+            } catch (Exception ignored) {
+                Toast.makeText(this, "可在系统设置中允许本应用后台运行", Toast.LENGTH_LONG).show();
+            }
         }
     }
 
@@ -1039,7 +1071,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        return "NetworkStudyAndroid/1.12.0";
+        return "NetworkStudyAndroid/1.13.0";
     }
 
     private String contentDispositionForFilename(String filename) {
@@ -1156,7 +1188,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.12.0";
+            return "1.13.0";
         }
 
         @JavascriptInterface
