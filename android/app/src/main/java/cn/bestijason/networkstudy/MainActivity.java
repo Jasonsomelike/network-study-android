@@ -10,6 +10,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.Base64;
@@ -25,6 +27,7 @@ import android.widget.TextView;
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -71,6 +74,7 @@ public class MainActivity extends BridgeActivity {
     private boolean nativeShellVisible;
     private boolean keyboardVisible;
     private boolean nativeConversationDetail;
+    private boolean nativeImagePreviewOpen;
     private long lastBackPressedAt;
     private String nativeShellPath = "";
     private Tencent qqTencent;
@@ -78,6 +82,9 @@ public class MainActivity extends BridgeActivity {
     private String pendingQqResult = "";
     private boolean qqLoginInFlight;
     private boolean qqCheckInFlight;
+    private boolean chatGenerationActive;
+    private String activeChatGenerationConversationId = "";
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final NetworkStudyBridge networkStudyBridge = new NetworkStudyBridge();
 
     private final IUiListener qqLoginListener = new IUiListener() {
@@ -142,6 +149,11 @@ public class MainActivity extends BridgeActivity {
             settings.setDomStorageEnabled(true);
             settings.setDatabaseEnabled(true);
             settings.setMediaPlaybackRequiresUserGesture(false);
+            settings.setSupportZoom(true);
+            settings.setBuiltInZoomControls(true);
+            settings.setDisplayZoomControls(false);
+            settings.setLoadWithOverviewMode(true);
+            settings.setUseWideViewPort(true);
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
@@ -323,7 +335,22 @@ public class MainActivity extends BridgeActivity {
         long now = System.currentTimeMillis();
         if (now - lastBackPressedAt <= BACK_EXIT_CONFIRM_MS) {
             lastBackPressedAt = 0L;
-            moveTaskToBack(true);
+            stopChatForegroundService();
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    finishAndRemoveTask();
+                } else {
+                    finishAffinity();
+                }
+            } catch (Exception ignored) {
+                finishAffinity();
+            }
+            mainHandler.postDelayed(() -> {
+                try {
+                    System.exit(0);
+                } catch (Exception ignored) {
+                }
+            }, 250);
             return;
         }
         lastBackPressedAt = now;
@@ -331,6 +358,12 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void handleNativeBackPressed() {
+        if (nativeImagePreviewOpen) {
+            nativeImagePreviewOpen = false;
+            dispatchNativeBackAction("image-preview-close");
+            return;
+        }
+
         if (nativeConversationDetail) {
             nativeConversationDetail = false;
             applyNativeShellVisibility();
@@ -510,6 +543,50 @@ public class MainActivity extends BridgeActivity {
             + detail.toString()
             + "}))";
         webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
+    private void dispatchChatEnteredEvent() {
+        int[] delays = new int[] { 60, 260, 720, 1400, 2400 };
+        for (int delay : delays) {
+            mainHandler.postDelayed(() -> {
+                try {
+                    JSONObject detail = new JSONObject();
+                    detail.put("path", nativeShellPath);
+                    detail.put("conversationDetail", nativeConversationDetail);
+                    detail.put("at", System.currentTimeMillis());
+                    dispatchWebEvent("network-study-chat-entered", detail);
+                } catch (Exception ignored) {
+                }
+            }, delay);
+        }
+    }
+
+    private void setChatGenerationForeground(boolean active, String conversationId) {
+        chatGenerationActive = active;
+        activeChatGenerationConversationId = conversationId == null ? "" : conversationId;
+        Intent intent = new Intent(this, ChatForegroundService.class);
+        intent.putExtra(ChatForegroundService.EXTRA_CONVERSATION_ID, activeChatGenerationConversationId);
+        if (active) {
+            intent.setAction(ChatForegroundService.ACTION_START);
+            try {
+                ContextCompat.startForegroundService(this, intent);
+            } catch (Exception error) {
+                Toast.makeText(this, "后台生成保活启动失败，将在返回前台后自动恢复", Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            stopService(intent);
+        }
+    }
+
+    private void stopChatForegroundService() {
+        chatGenerationActive = false;
+        activeChatGenerationConversationId = "";
+        Intent intent = new Intent(this, ChatForegroundService.class);
+        intent.setAction(ChatForegroundService.ACTION_STOP);
+        try {
+            stopService(intent);
+        } catch (Exception ignored) {
+        }
     }
 
     private void startQqLogin(String purpose) {
@@ -751,6 +828,12 @@ public class MainActivity extends BridgeActivity {
     public void onPause() {
         dispatchAppLifecycleState("pause");
         super.onPause();
+    }
+
+    @Override
+    public void onDestroy() {
+        stopChatForegroundService();
+        super.onDestroy();
     }
 
     private void enqueueSystemDownload(
@@ -1212,7 +1295,20 @@ public class MainActivity extends BridgeActivity {
             runOnUiThread(() -> {
                 nativeConversationDetail = detail;
                 applyNativeShellVisibility();
+                if (detail) {
+                    dispatchChatEnteredEvent();
+                }
             });
+        }
+
+        @JavascriptInterface
+        public void setChatGenerationActive(boolean active, String conversationId) {
+            runOnUiThread(() -> setChatGenerationForeground(active, conversationId));
+        }
+
+        @JavascriptInterface
+        public void setImagePreviewOpen(boolean open) {
+            runOnUiThread(() -> nativeImagePreviewOpen = open);
         }
     }
 }
