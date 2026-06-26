@@ -158,11 +158,10 @@ public class MainActivity extends BridgeActivity {
             settings.setLoadWithOverviewMode(true);
             settings.setUseWideViewPort(true);
             String userAgent = settings.getUserAgentString();
-            if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
-                settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.13.0"
-                );
-            }
+            String normalizedUserAgent = userAgent == null ? "" : userAgent.replaceAll("\\s*NetworkStudyAndroid/[\\w.\\-]+", "");
+            settings.setUserAgentString(
+                (normalizedUserAgent.isEmpty() ? "" : normalizedUserAgent + " ") + "NetworkStudyAndroid/1.14.0"
+            );
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
         }
         super.load();
@@ -549,19 +548,16 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void dispatchChatEnteredEvent() {
-        int[] delays = new int[] { 60, 260, 720, 1400, 2400 };
-        for (int delay : delays) {
-            mainHandler.postDelayed(() -> {
-                try {
-                    JSONObject detail = new JSONObject();
-                    detail.put("path", nativeShellPath);
-                    detail.put("conversationDetail", nativeConversationDetail);
-                    detail.put("at", System.currentTimeMillis());
-                    dispatchWebEvent("network-study-chat-entered", detail);
-                } catch (Exception ignored) {
-                }
-            }, delay);
-        }
+        mainHandler.postDelayed(() -> {
+            try {
+                JSONObject detail = new JSONObject();
+                detail.put("path", nativeShellPath);
+                detail.put("conversationDetail", nativeConversationDetail);
+                detail.put("at", System.currentTimeMillis());
+                dispatchWebEvent("network-study-chat-entered", detail);
+            } catch (Exception ignored) {
+            }
+        }, 80);
     }
 
     private void setChatGenerationForeground(boolean active, String conversationId) {
@@ -1071,7 +1067,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        return "NetworkStudyAndroid/1.13.0";
+        return "NetworkStudyAndroid/1.14.0";
     }
 
     private String contentDispositionForFilename(String filename) {
@@ -1188,7 +1184,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.13.0";
+            return "1.14.0";
         }
 
         @JavascriptInterface
