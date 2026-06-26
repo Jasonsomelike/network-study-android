@@ -157,7 +157,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             if (userAgent == null || !userAgent.contains("NetworkStudyAndroid/")) {
                 settings.setUserAgentString(
-                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.11.0"
+                    (userAgent == null ? "" : userAgent + " ") + "NetworkStudyAndroid/1.12.0"
                 );
             }
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
@@ -1039,7 +1039,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        return "NetworkStudyAndroid/1.11.0";
+        return "NetworkStudyAndroid/1.12.0";
     }
 
     private String contentDispositionForFilename(String filename) {
@@ -1156,7 +1156,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.11.0";
+            return "1.12.0";
         }
 
         @JavascriptInterface

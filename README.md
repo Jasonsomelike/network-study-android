@@ -2,7 +2,7 @@
 
 这是 `https://www.jasonsome.cn` 的 Capacitor Android 客户端。
 
-当前版本：`1.11.0`（versionCode `12`）。App 内“我的 → App 设置”可以选择文件保存文件夹和界面配色，
+当前版本：`1.12.0`（versionCode `13`）。App 内“我的 → App 设置”可以选择文件保存文件夹和界面配色，
 文档预览与下载使用不同链路，预览不会自动触发下载。
 
 ## QQ 登录
@@ -14,6 +14,15 @@
 
 APP Key 属于服务端密钥，不写入 APK，也不会提交到公开仓库。原生客户端只把 QQ
 授权返回的 `access_token` 和 `openid` 交给 `www.jasonsome.cn` 服务端校验。
+
+## 1.12.0 更新
+
+- 真正退出 App：一级页二次返回执行 `finishAndRemoveTask`/`finishAffinity` 并结束进程，不再只是退到后台。
+- 后台生成保活：生成中启动前台服务和 WakeLock，降低切后台后的 `network error` 与对话丢失概率。
+- 进入会话详情后多次触发网页滑底事件，确保 APK 进入对话自动定位到最新消息。
+- 图片查看原图支持双指缩放，返回键可关闭预览，不再全屏卡住 WebView。
+- App 下载更新改用 `www.jasonsome.cn/downloads` 自有域名镜像，减少 GitHub 原链下载失败。
+- WebView User-Agent 和原生桥版本同步为 `NetworkStudyAndroid/1.12.0`。
 
 ## 1.11.0 更新
 
