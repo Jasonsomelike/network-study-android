@@ -50,9 +50,9 @@
             android:layout_width="42dp"
             android:layout_height="42dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="我的"
+            android:contentDescription="下载中心"
             android:padding="12dp"
-            android:src="@drawable/ic_native_profile"
+            android:src="@drawable/ic_native_download"
             android:tint="@color/native_shell_ink" />
     </LinearLayout>
 

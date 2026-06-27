@@ -200,7 +200,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             String normalizedUserAgent = userAgent == null ? "" : userAgent.replaceAll("\\s*NetworkStudyAndroid/[\\w.\\-]+", "");
             settings.setUserAgentString(
-                (normalizedUserAgent.isEmpty() ? "" : normalizedUserAgent + " ") + "NetworkStudyAndroid/1.14.2"
+                (normalizedUserAgent.isEmpty() ? "" : normalizedUserAgent + " ") + "NetworkStudyAndroid/1.14.3"
             );
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
         }
@@ -280,7 +280,7 @@ public class MainActivity extends BridgeActivity {
         nativeEyebrow = findViewById(R.id.native_eyebrow);
 
         findViewById(R.id.native_profile_button).setOnClickListener(
-            view -> dispatchNativeNavigation("/profile")
+            view -> dispatchNativeNavigation("/downloads")
         );
         findViewById(R.id.nav_chat).setOnClickListener(view -> dispatchNativeNavigation("/chat"));
         findViewById(R.id.nav_library).setOnClickListener(view -> dispatchNativeNavigation("/library"));
@@ -354,6 +354,7 @@ public class MainActivity extends BridgeActivity {
                 || "/sources".equals(nativeShellPath)
                 || "/knowledge-graph".equals(nativeShellPath)
                 || "/profile".equals(nativeShellPath)
+                || "/downloads".equals(nativeShellPath)
         );
     }
 
@@ -1243,7 +1244,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        return "NetworkStudyAndroid/1.14.2";
+        return "NetworkStudyAndroid/1.14.3";
     }
 
     private String contentDispositionForFilename(String filename) {
@@ -1424,7 +1425,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.14.2";
+            return "1.14.3";
         }
 
         @JavascriptInterface
