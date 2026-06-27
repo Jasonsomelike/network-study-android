@@ -1,6 +1,5 @@
 package cn.bestijason.networkstudy;
 
-import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -30,6 +29,7 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -42,6 +42,7 @@ import com.tencent.tauth.IUiListener;
 import com.tencent.tauth.Tencent;
 import com.tencent.tauth.UiError;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
@@ -52,12 +53,14 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 public class MainActivity extends BridgeActivity {
     private static final String MOBILE_QQ_APP_ID = "1904508499";
     private static final String PREFERENCES = "network_study_settings";
     private static final String DOWNLOAD_TREE_URI = "download_tree_uri";
     private static final String DOWNLOAD_TREE_NAME = "download_tree_name";
+    private static final String DOWNLOAD_TASKS = "download_tasks";
     private static final String QQ_PENDING_RESULT = "qq_pending_result";
     private static final String QQ_LOGIN_PURPOSE = "qq_login_purpose";
     private static final String QQ_LOGIN_IN_FLIGHT = "qq_login_in_flight";
@@ -197,7 +200,7 @@ public class MainActivity extends BridgeActivity {
             String userAgent = settings.getUserAgentString();
             String normalizedUserAgent = userAgent == null ? "" : userAgent.replaceAll("\\s*NetworkStudyAndroid/[\\w.\\-]+", "");
             settings.setUserAgentString(
-                (normalizedUserAgent.isEmpty() ? "" : normalizedUserAgent + " ") + "NetworkStudyAndroid/1.14.1"
+                (normalizedUserAgent.isEmpty() ? "" : normalizedUserAgent + " ") + "NetworkStudyAndroid/1.14.2"
             );
             initialWebView.addJavascriptInterface(networkStudyBridge, "NetworkStudyApp");
         }
@@ -248,12 +251,7 @@ public class MainActivity extends BridgeActivity {
         cookieManager.setAcceptThirdPartyCookies(webView, true);
 
         webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
-            String treeUri = preferences.getString(DOWNLOAD_TREE_URI, "");
-            if (!treeUri.isEmpty() && (url.startsWith("http://") || url.startsWith("https://"))) {
-                downloadToSelectedDirectory(url, userAgent, contentDisposition, mimeType, treeUri);
-            } else {
-                enqueueSystemDownload(url, userAgent, contentDisposition, mimeType);
-            }
+            startManagedDownload(url, userAgent, contentDisposition, mimeType);
         });
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
@@ -901,30 +899,248 @@ public class MainActivity extends BridgeActivity {
         super.onDestroy();
     }
 
-    private void enqueueSystemDownload(
+    private synchronized JSONArray getDownloadTasksArray() {
+        try {
+            String raw = preferences != null ? preferences.getString(DOWNLOAD_TASKS, "[]") : "[]";
+            return new JSONArray(raw == null || raw.isEmpty() ? "[]" : raw);
+        } catch (Exception ignored) {
+            return new JSONArray();
+        }
+    }
+
+    private synchronized void saveDownloadTasksArray(JSONArray tasks) {
+        if (preferences != null) {
+            preferences.edit().putString(DOWNLOAD_TASKS, tasks.toString()).apply();
+        }
+        notifyDownloadsChanged();
+    }
+
+    private synchronized JSONObject getDownloadTask(String taskId) {
+        JSONArray tasks = getDownloadTasksArray();
+        for (int index = 0; index < tasks.length(); index += 1) {
+            JSONObject task = tasks.optJSONObject(index);
+            if (task != null && taskId.equals(task.optString("id"))) {
+                return task;
+            }
+        }
+        return null;
+    }
+
+    private synchronized void upsertDownloadTask(JSONObject nextTask) {
+        JSONArray tasks = getDownloadTasksArray();
+        JSONArray nextTasks = new JSONArray();
+        boolean updated = false;
+        String taskId = nextTask.optString("id");
+        for (int index = 0; index < tasks.length(); index += 1) {
+            JSONObject task = tasks.optJSONObject(index);
+            if (task == null) {
+                continue;
+            }
+            if (taskId.equals(task.optString("id"))) {
+                nextTasks.put(nextTask);
+                updated = true;
+            } else if (!"deleted".equals(task.optString("status"))) {
+                nextTasks.put(task);
+            }
+        }
+        if (!updated) {
+            nextTasks.put(nextTask);
+        }
+        saveDownloadTasksArray(nextTasks);
+    }
+
+    private void notifyDownloadsChanged() {
+        if (webView == null) {
+            return;
+        }
+        webView.post(() -> webView.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('network-study-downloads-changed'))",
+            null
+        ));
+    }
+
+    private JSONObject createDownloadTask(String url, String filename, String mimeType) throws Exception {
+        long now = System.currentTimeMillis();
+        JSONObject task = new JSONObject();
+        task.put("id", UUID.randomUUID().toString());
+        task.put("url", url);
+        task.put("filename", filename);
+        task.put("mimeType", normalizeMimeType(mimeType));
+        task.put("status", "queued");
+        task.put("progress", 0);
+        task.put("downloadedBytes", 0);
+        task.put("totalBytes", 0);
+        task.put("isUpdate", filename.toLowerCase().endsWith(".apk") || url.toLowerCase().contains(".apk"));
+        task.put("createdAt", now);
+        task.put("updatedAt", now);
+        return task;
+    }
+
+    private Uri createDownloadDestination(String filename, String mimeType) throws Exception {
+        String treeUriValue = preferences.getString(DOWNLOAD_TREE_URI, "");
+        String finalMimeType = normalizeMimeType(mimeType);
+        if (!treeUriValue.isEmpty()) {
+            Uri treeUri = Uri.parse(treeUriValue);
+            String treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri);
+            Uri parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocumentId);
+            Uri destination = DocumentsContract.createDocument(
+                getContentResolver(),
+                parentUri,
+                finalMimeType,
+                filename
+            );
+            if (destination == null) {
+                throw new IllegalStateException("Unable to create destination");
+            }
+            return destination;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME, filename);
+            values.put(MediaStore.Downloads.MIME_TYPE, finalMimeType);
+            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            Uri destination = getContentResolver().insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                values
+            );
+            if (destination == null) {
+                throw new IllegalStateException("Unable to create download destination");
+            }
+            return destination;
+        }
+        File directory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IllegalStateException("Unable to create downloads directory");
+        }
+        File file = new File(directory, filename);
+        return Uri.fromFile(file);
+    }
+
+    private OutputStream openDestinationOutputStream(Uri destination) throws Exception {
+        if ("content".equals(destination.getScheme())) {
+            OutputStream output = getContentResolver().openOutputStream(destination, "w");
+            if (output == null) {
+                throw new IllegalStateException("Unable to open destination");
+            }
+            return output;
+        }
+        File file = new File(destination.getPath() == null ? "" : destination.getPath());
+        return new FileOutputStream(file);
+    }
+
+    private void startManagedDownload(
         String url,
         String userAgent,
         String contentDisposition,
         String mimeType
     ) {
         try {
-            String filename = resolveDownloadFilename(url, contentDisposition, mimeType);
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            String cookies = cookieManager.getCookie(url);
-            if (cookies != null && !cookies.isEmpty()) {
-                request.addRequestHeader("Cookie", cookies);
-            }
-            request.addRequestHeader("User-Agent", userAgent);
-            request.setMimeType(mimeType);
-            request.setTitle(filename);
-            request.setDescription("正在下载学习资料");
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
-            DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            manager.enqueue(request);
-            Toast.makeText(this, "已加入下载任务：" + filename, Toast.LENGTH_SHORT).show();
+            String initialFilename = resolveDownloadFilename(url, contentDisposition, mimeType);
+            JSONObject task = createDownloadTask(url, initialFilename, mimeType);
+            upsertDownloadTask(task);
+            Toast.makeText(this, "已加入 App 下载栏：" + initialFilename, Toast.LENGTH_SHORT).show();
+            new Thread(() -> runManagedDownload(task.optString("id"), url, userAgent, contentDisposition, mimeType)).start();
         } catch (Exception error) {
             Toast.makeText(this, "下载启动失败，请稍后重试", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void runManagedDownload(String taskId, String url, String userAgent, String contentDisposition, String mimeType) {
+        HttpURLConnection connection = null;
+        Uri destination = null;
+        try {
+            JSONObject task = getDownloadTask(taskId);
+            if (task == null) {
+                return;
+            }
+            task.put("status", "running");
+            task.put("updatedAt", System.currentTimeMillis());
+            upsertDownloadTask(task);
+
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setInstanceFollowRedirects(true);
+            connection.setConnectTimeout(30000);
+            connection.setReadTimeout(180000);
+            connection.setRequestProperty("User-Agent", userAgent);
+            String cookies = cookieManager.getCookie(url);
+            if (cookies != null && !cookies.isEmpty()) {
+                connection.setRequestProperty("Cookie", cookies);
+            }
+            connection.connect();
+            if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) {
+                throw new IllegalStateException("HTTP " + connection.getResponseCode());
+            }
+
+            String responseDisposition = connection.getHeaderField("Content-Disposition");
+            String responseType = connection.getContentType();
+            String filename = resolveDownloadFilename(
+                connection.getURL().toString(),
+                responseDisposition != null ? responseDisposition : contentDisposition,
+                responseType != null ? responseType : mimeType
+            );
+            String finalMimeType = normalizeMimeType(responseType != null ? responseType : mimeType);
+            long totalBytes = connection.getContentLengthLong();
+            destination = createDownloadDestination(filename, finalMimeType);
+
+            task.put("filename", filename);
+            task.put("mimeType", finalMimeType);
+            task.put("totalBytes", Math.max(0, totalBytes));
+            task.put("uri", destination.toString());
+            task.put("updatedAt", System.currentTimeMillis());
+            upsertDownloadTask(task);
+
+            long downloaded = 0;
+            long lastNotifyAt = 0;
+            try (
+                InputStream input = connection.getInputStream();
+                OutputStream output = openDestinationOutputStream(destination)
+            ) {
+                byte[] buffer = new byte[64 * 1024];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, count);
+                    downloaded += count;
+                    long now = System.currentTimeMillis();
+                    if (now - lastNotifyAt > 350) {
+                        int progress = totalBytes > 0 ? (int) Math.min(99, (downloaded * 100) / totalBytes) : 0;
+                        task.put("downloadedBytes", downloaded);
+                        task.put("progress", progress);
+                        task.put("updatedAt", now);
+                        upsertDownloadTask(task);
+                        lastNotifyAt = now;
+                    }
+                }
+                output.flush();
+            }
+
+            task.put("status", "completed");
+            task.put("downloadedBytes", downloaded);
+            task.put("progress", 100);
+            task.put("updatedAt", System.currentTimeMillis());
+            upsertDownloadTask(task);
+            boolean isUpdate = task.optBoolean("isUpdate");
+            runOnUiThread(() -> {
+                Toast.makeText(this, isUpdate ? "更新包下载完成，正在打开安装器" : "文件下载完成：" + filename, Toast.LENGTH_LONG).show();
+                if (isUpdate) {
+                    openDownloadTask(taskId);
+                }
+            });
+        } catch (Exception error) {
+            try {
+                JSONObject task = getDownloadTask(taskId);
+                if (task != null) {
+                    task.put("status", "failed");
+                    task.put("error", "下载失败：" + error.getMessage());
+                    task.put("updatedAt", System.currentTimeMillis());
+                    upsertDownloadTask(task);
+                }
+            } catch (Exception ignored) {
+            }
+            runOnUiThread(() -> Toast.makeText(this, "下载失败，请在 App 设置中重试或检查网络", Toast.LENGTH_LONG).show());
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
     }
 
@@ -995,83 +1211,6 @@ public class MainActivity extends BridgeActivity {
             : guessed;
     }
 
-    private void downloadToSelectedDirectory(
-        String url,
-        String userAgent,
-        String contentDisposition,
-        String mimeType,
-        String treeUriValue
-    ) {
-        Toast.makeText(this, "正在下载到所选文件夹", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            HttpURLConnection connection = null;
-            try {
-                connection = (HttpURLConnection) new URL(url).openConnection();
-                connection.setInstanceFollowRedirects(true);
-                connection.setConnectTimeout(30000);
-                connection.setReadTimeout(180000);
-                connection.setRequestProperty("User-Agent", userAgent);
-                String cookies = cookieManager.getCookie(url);
-                if (cookies != null && !cookies.isEmpty()) {
-                    connection.setRequestProperty("Cookie", cookies);
-                }
-                connection.connect();
-                if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) {
-                    throw new IllegalStateException("HTTP " + connection.getResponseCode());
-                }
-
-                String responseDisposition = connection.getHeaderField("Content-Disposition");
-                String responseType = connection.getContentType();
-                String filename = resolveDownloadFilename(
-                    connection.getURL().toString(),
-                    responseDisposition != null ? responseDisposition : contentDisposition,
-                    responseType != null ? responseType : mimeType
-                );
-                String finalMimeType = normalizeMimeType(responseType != null ? responseType : mimeType);
-
-                Uri treeUri = Uri.parse(treeUriValue);
-                String treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri);
-                Uri parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocumentId);
-                Uri destination = DocumentsContract.createDocument(
-                    getContentResolver(),
-                    parentUri,
-                    finalMimeType,
-                    filename
-                );
-                if (destination == null) {
-                    throw new IllegalStateException("Unable to create destination");
-                }
-
-                try (
-                    InputStream input = connection.getInputStream();
-                    OutputStream output = getContentResolver().openOutputStream(destination, "w")
-                ) {
-                    if (output == null) {
-                        throw new IllegalStateException("Unable to open destination");
-                    }
-                    byte[] buffer = new byte[64 * 1024];
-                    int count;
-                    while ((count = input.read(buffer)) != -1) {
-                        output.write(buffer, 0, count);
-                    }
-                    output.flush();
-                }
-                runOnUiThread(() ->
-                    Toast.makeText(this, "文件已保存：" + filename, Toast.LENGTH_LONG).show()
-                );
-            } catch (Exception error) {
-                runOnUiThread(() -> {
-                    Toast.makeText(this, "自定义目录下载失败，已改用系统下载目录", Toast.LENGTH_LONG).show();
-                    enqueueSystemDownload(url, userAgent, contentDisposition, mimeType);
-                });
-            } finally {
-                if (connection != null) {
-                    connection.disconnect();
-                }
-            }
-        }).start();
-    }
-
     private String readableTreeName(Uri uri) {
         try {
             String documentId = DocumentsContract.getTreeDocumentId(uri);
@@ -1104,7 +1243,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        return "NetworkStudyAndroid/1.14.1";
+        return "NetworkStudyAndroid/1.14.2";
     }
 
     private String contentDispositionForFilename(String filename) {
@@ -1125,11 +1264,75 @@ public class MainActivity extends BridgeActivity {
             ? "application/vnd.android.package-archive"
             : "application/octet-stream";
         String disposition = contentDispositionForFilename(filename);
-        String treeUri = preferences.getString(DOWNLOAD_TREE_URI, "");
-        if (!treeUri.isEmpty() && (finalUrl.startsWith("http://") || finalUrl.startsWith("https://"))) {
-            downloadToSelectedDirectory(finalUrl, currentWebViewUserAgent(), disposition, mimeType, treeUri);
-        } else {
-            enqueueSystemDownload(finalUrl, currentWebViewUserAgent(), disposition, mimeType);
+        startManagedDownload(finalUrl, currentWebViewUserAgent(), disposition, mimeType);
+    }
+
+    private Uri viewableUri(Uri storedUri) {
+        if (storedUri == null) {
+            return null;
+        }
+        if ("file".equals(storedUri.getScheme())) {
+            File file = new File(storedUri.getPath() == null ? "" : storedUri.getPath());
+            return FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+        }
+        return storedUri;
+    }
+
+    private void openDownloadTask(String taskId) {
+        try {
+            JSONObject task = getDownloadTask(taskId);
+            if (task == null || !"completed".equals(task.optString("status"))) {
+                Toast.makeText(this, "文件尚未下载完成", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Uri storedUri = Uri.parse(task.optString("uri"));
+            Uri uri = viewableUri(storedUri);
+            if (uri == null) {
+                throw new IllegalStateException("File URI missing");
+            }
+            String mimeType = normalizeMimeType(task.optString("mimeType"));
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, mimeType);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception error) {
+            Toast.makeText(this, "无法打开文件，请到下载目录中查看", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void deleteDownloadTask(String taskId) {
+        try {
+            JSONArray tasks = getDownloadTasksArray();
+            JSONArray nextTasks = new JSONArray();
+            for (int index = 0; index < tasks.length(); index += 1) {
+                JSONObject task = tasks.optJSONObject(index);
+                if (task == null) {
+                    continue;
+                }
+                if (taskId.equals(task.optString("id"))) {
+                    String uriValue = task.optString("uri");
+                    if (!uriValue.isEmpty()) {
+                        try {
+                            Uri uri = Uri.parse(uriValue);
+                            if ("content".equals(uri.getScheme())) {
+                                getContentResolver().delete(uri, null, null);
+                            } else if ("file".equals(uri.getScheme())) {
+                                File file = new File(uri.getPath() == null ? "" : uri.getPath());
+                                if (file.exists()) {
+                                    file.delete();
+                                }
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    continue;
+                }
+                nextTasks.put(task);
+            }
+            saveDownloadTasksArray(nextTasks);
+            Toast.makeText(this, "已从下载栏移除", Toast.LENGTH_SHORT).show();
+        } catch (Exception error) {
+            Toast.makeText(this, "删除下载任务失败", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -1221,7 +1424,7 @@ public class MainActivity extends BridgeActivity {
     private class NetworkStudyBridge {
         @JavascriptInterface
         public String getBridgeVersion() {
-            return "1.14.1";
+            return "1.14.2";
         }
 
         @JavascriptInterface
@@ -1260,8 +1463,24 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public String getDownloadTasks() {
+            return getDownloadTasksArray().toString();
+        }
+
+        @JavascriptInterface
+        public void openDownloadTask(String id) {
+            runOnUiThread(() -> MainActivity.this.openDownloadTask(id));
+        }
+
+        @JavascriptInterface
+        public void deleteDownloadTask(String id) {
+            runOnUiThread(() -> MainActivity.this.deleteDownloadTask(id));
+        }
+
+        @JavascriptInterface
         public void chooseDownloadDirectory() {
             runOnUiThread(() -> {
+                Toast.makeText(MainActivity.this, "请选择保存文件夹，App 将在此保留下载任务", Toast.LENGTH_SHORT).show();
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 intent.addFlags(
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -1269,6 +1488,10 @@ public class MainActivity extends BridgeActivity {
                         | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                         | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
                 );
+                String currentTree = preferences.getString(DOWNLOAD_TREE_URI, "");
+                if (!currentTree.isEmpty()) {
+                    intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(currentTree));
+                }
                 directoryPicker.launch(intent);
             });
         }
