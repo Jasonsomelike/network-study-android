@@ -527,7 +527,7 @@ public class MainActivity extends BridgeActivity {
                 }
             });
             if (webView != null) {
-                webView.postDelayed(finishWithoutUnion, 2500);
+                webView.postDelayed(finishWithoutUnion, 5000);
             }
         } catch (Exception ignored) {
             finishWithoutUnion.run();
