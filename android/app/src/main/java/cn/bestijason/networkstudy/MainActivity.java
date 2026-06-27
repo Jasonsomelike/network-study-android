@@ -90,6 +90,42 @@ public class MainActivity extends BridgeActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final NetworkStudyBridge networkStudyBridge = new NetworkStudyBridge();
 
+    private String qqNumberFromJson(JSONObject value) {
+        if (value == null) {
+            return "";
+        }
+        String[] keys = new String[] {
+            "qqNumber",
+            "qq_number",
+            "qq",
+            "uin",
+            "qqNo",
+            "qq_no",
+            "account"
+        };
+        for (String key : keys) {
+            String candidate = value.optString(key);
+            if (candidate == null || candidate.isEmpty()) {
+                continue;
+            }
+            String digits = candidate.replaceAll("\\D+", "");
+            if (digits.length() >= 5 && digits.length() <= 12) {
+                return digits;
+            }
+        }
+        return "";
+    }
+
+    private void putQqNumberIfPresent(JSONObject detail, JSONObject source) {
+        try {
+            String qqNumber = qqNumberFromJson(source);
+            if (!qqNumber.isEmpty()) {
+                detail.put("qqNumber", qqNumber);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     private final IUiListener qqLoginListener = new IUiListener() {
         @Override
         public void onComplete(Object value) {
@@ -114,6 +150,7 @@ public class MainActivity extends BridgeActivity {
                 detail.put("openId", openId);
                 detail.put("expiresIn", expiresIn);
                 detail.put("purpose", qqLoginPurpose);
+                putQqNumberIfPresent(detail, response);
                 completeQqSuccess(detail, "callback-complete", true, true);
             } catch (Exception error) {
                 dispatchQqError("QQ 登录结果无效，请重试");
