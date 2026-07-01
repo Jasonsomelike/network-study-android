@@ -282,11 +282,11 @@ public class MainActivity extends BridgeActivity {
         findViewById(R.id.native_profile_button).setOnClickListener(
             view -> dispatchNativeNavigation("/downloads")
         );
-        findViewById(R.id.nav_chat).setOnClickListener(view -> dispatchNativeNavigation("/chat"));
-        findViewById(R.id.nav_library).setOnClickListener(view -> dispatchNativeNavigation("/library"));
-        findViewById(R.id.nav_sources).setOnClickListener(view -> dispatchNativeNavigation("/sources"));
-        findViewById(R.id.nav_graph).setOnClickListener(view -> dispatchNativeNavigation("/knowledge-graph"));
-        findViewById(R.id.nav_profile).setOnClickListener(view -> dispatchNativeNavigation("/profile"));
+        findViewById(R.id.nav_chat).setOnClickListener(view -> handleNativeNavTap(view, "/chat"));
+        findViewById(R.id.nav_library).setOnClickListener(view -> handleNativeNavTap(view, "/library"));
+        findViewById(R.id.nav_sources).setOnClickListener(view -> handleNativeNavTap(view, "/sources"));
+        findViewById(R.id.nav_graph).setOnClickListener(view -> handleNativeNavTap(view, "/textbook-knowledge-graph"));
+        findViewById(R.id.nav_profile).setOnClickListener(view -> handleNativeNavTap(view, "/profile"));
 
         ViewCompat.setOnApplyWindowInsetsListener(nativeRoot, (view, insets) -> {
             androidx.core.graphics.Insets bars = insets.getInsets(
@@ -309,16 +309,85 @@ public class MainActivity extends BridgeActivity {
 
     private void applyNativeShellVisibility() {
         boolean chatRoute = "/chat".equals(nativeShellPath);
-        nativeTopBar.setVisibility(
-            nativeShellVisible && !chatRoute ? View.VISIBLE : View.GONE
+        animateShellChrome(
+            nativeTopBar,
+            nativeShellVisible && !chatRoute,
+            -12f
         );
-        nativeBottomNavigation.setVisibility(
+        animateShellChrome(
+            nativeBottomNavigation,
             nativeShellVisible
                 && !keyboardVisible
-                && !(chatRoute && nativeConversationDetail)
-                ? View.VISIBLE
-                : View.GONE
+                && !(chatRoute && nativeConversationDetail),
+            12f
         );
+    }
+
+    private void animateShellChrome(View view, boolean visible, float hiddenTranslationDp) {
+        if (view == null) {
+            return;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        float hiddenTranslation = hiddenTranslationDp * density;
+        view.animate().cancel();
+        if (visible) {
+            if (view.getVisibility() != View.VISIBLE) {
+                view.setAlpha(0f);
+                view.setTranslationY(hiddenTranslation);
+                view.setVisibility(View.VISIBLE);
+            }
+            view.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(220L)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                .start();
+        } else {
+            if (view.getVisibility() != View.VISIBLE) {
+                return;
+            }
+            view.animate()
+                .alpha(0f)
+                .translationY(hiddenTranslation)
+                .setDuration(160L)
+                .setInterpolator(new android.view.animation.AccelerateInterpolator())
+                .withEndAction(() -> {
+                    view.setVisibility(View.GONE);
+                    view.setAlpha(1f);
+                    view.setTranslationY(0f);
+                })
+                .start();
+        }
+    }
+
+    private void animateTextSwap(TextView view, String nextValue, float directionDp) {
+        if (view == null) {
+            return;
+        }
+        String currentValue = view.getText() == null ? "" : view.getText().toString();
+        String safeNextValue = nextValue == null ? "" : nextValue;
+        if (currentValue.equals(safeNextValue)) {
+            return;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        float offset = directionDp * density;
+        view.animate().cancel();
+        view.animate()
+            .alpha(0f)
+            .translationY(-offset)
+            .setDuration(95L)
+            .setInterpolator(new android.view.animation.AccelerateInterpolator())
+            .withEndAction(() -> {
+                view.setText(safeNextValue);
+                view.setTranslationY(offset);
+                view.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(190L)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                    .start();
+            })
+            .start();
     }
 
     private void updateNativeShell(String path, String title, String eyebrow) {
@@ -326,12 +395,14 @@ public class MainActivity extends BridgeActivity {
         if (!"/chat".equals(path)) {
             nativeConversationDetail = false;
         }
-        nativeTitle.setText(title);
-        nativeEyebrow.setText(eyebrow);
+        animateTextSwap(nativeTitle, title, 7f);
+        animateTextSwap(nativeEyebrow, eyebrow, 4f);
         findViewById(R.id.nav_chat).setSelected("/chat".equals(path));
         findViewById(R.id.nav_library).setSelected("/library".equals(path));
         findViewById(R.id.nav_sources).setSelected("/sources".equals(path));
-        findViewById(R.id.nav_graph).setSelected("/knowledge-graph".equals(path));
+        findViewById(R.id.nav_graph).setSelected(
+            "/knowledge-graph".equals(path) || "/textbook-knowledge-graph".equals(path)
+        );
         findViewById(R.id.nav_profile).setSelected("/profile".equals(path));
         setNativeShellVisible(true);
     }
@@ -345,6 +416,25 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    private void handleNativeNavTap(View view, String path) {
+        if (view != null) {
+            view.animate().cancel();
+            view.animate()
+                .scaleX(0.92f)
+                .scaleY(0.92f)
+                .setDuration(70L)
+                .setInterpolator(new android.view.animation.AccelerateInterpolator())
+                .withEndAction(() -> view.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(180L)
+                    .setInterpolator(new android.view.animation.OvershootInterpolator(2.2f))
+                    .start())
+                .start();
+        }
+        dispatchNativeNavigation(path);
+    }
+
     private boolean isPrimaryShellRoute() {
         return nativeShellVisible && (
             nativeShellPath == null
@@ -353,6 +443,7 @@ public class MainActivity extends BridgeActivity {
                 || "/library".equals(nativeShellPath)
                 || "/sources".equals(nativeShellPath)
                 || "/knowledge-graph".equals(nativeShellPath)
+                || "/textbook-knowledge-graph".equals(nativeShellPath)
                 || "/profile".equals(nativeShellPath)
                 || "/downloads".equals(nativeShellPath)
         );
